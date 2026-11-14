@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
-  ArrowRight, BookOpen, Check, ChevronRight, Coffee, Download, FileText, History,
+  ArrowRight, BookOpen, Brain, Check, ChevronRight, Coffee, Download, FileText, History, Inbox,
   Home, ListTodo, Maximize2, PanelTop, Pause, Pin, Play, RotateCcw, Settings as SettingsIcon,
   Sparkles, Square, StickyNote, Timer, Upload, X
 } from 'lucide-react'
-import { activeSession, recentTasks, workMs, type Card, type Command, type Document, type Outcome, type Session, type Settings, type State, type Task } from '../shared/model'
+import { activeSession, recentTasks, workMs, type Card, type Command, type Document, type Outcome, type Position, type Session, type Settings, type State, type StudyCard, type Task } from '../shared/model'
 import type { AiDraft, AiResult, Snapshot, WindowKind } from '../shared/bridge'
 import { api, dateLabel, formatDuration, unwrap } from './api'
 import { Reader, validatePdf } from './reader'
+import { StudyCardForm, StudyPage, type StudyDraft } from './study'
 import './style.css'
 
-type Page = 'home' | 'task' | 'reading' | 'history' | 'settings'
+type Page = 'home' | 'task' | 'reading' | 'study' | 'inbox' | 'history' | 'settings'
 const phaseName = { working: '进行中', paused: '已暂停', resting: '休息中', ended: '已结束' }
 const taskStatus = { open: '未完成', done: '已完成', archived: '已归档' }
 const outcomeName = { '': '未记录结果', done: '达成本次目标', partial: '部分达成', unmet: '未达成' }
@@ -65,7 +66,7 @@ function App() {
   const kind = (location.hash.slice(1) || 'main') as WindowKind
   const { data, error } = useSnapshot()
   if (!data) return <main className="loading" role="status"><Mark/>{error || '正在打开工作台…'}</main>
-  return kind === 'main' ? <Workspace data={data}/> : <Compact kind={kind} state={data.state} restoring={data.restoring}/>
+  return kind === 'main' ? <Workspace key={data.workspaceVersion} data={data}/> : <Compact key={data.workspaceVersion} kind={kind} state={data.state} restoring={data.restoring}/>
 }
 
 function Workspace({ data }: { data: Snapshot }) {
@@ -75,6 +76,9 @@ function Workspace({ data }: { data: Snapshot }) {
   const [page, setPage] = useState<Page>('home')
   const [taskId, setTaskId] = useState<string>()
   const [docId, setDocId] = useState<string>()
+  const [jump, setJump] = useState<{ position: Position; key: number }>()
+  const [studyDraft, setStudyDraft] = useState<StudyDraft>()
+  const [studyClock, setStudyClock] = useState(Date.now())
   const [flash, setFlash] = useState<{ text: string; error?: boolean }>()
   const [saving, setSaving] = useState(0)
   const [actionBusy, setActionBusy] = useState(false)
@@ -82,7 +86,7 @@ function Workspace({ data }: { data: Snapshot }) {
   const [confirm, setConfirm] = useState<{ title: string; detail: string; label: string; go: () => Promise<void> }>()
   const [ending, setEnding] = useState<Session>()
   const [resting, setResting] = useState<Session>()
-  const [capturing, setCapturing] = useState<Session>()
+  const [capturing, setCapturing] = useState<{ sessionId: string | null; captureId: string }>()
   const [aiDraft, setAiDraft] = useState<AiDraft>()
   const [aiBusy, setAiBusy] = useState(false)
   const [aiAnswer, setAiAnswer] = useState<AiResult>()
@@ -101,6 +105,12 @@ function Workspace({ data }: { data: Snapshot }) {
     flashTimer.current = setTimeout(() => setFlash(undefined), error ? 9000 : 5500)
   }
   useEffect(() => api.onNotice(message => announce(message)), [])
+  useEffect(() => {
+    if (page !== 'study') return
+    setStudyClock(Date.now())
+    const timer = setInterval(() => setStudyClock(Date.now()), 15_000)
+    return () => clearInterval(timer)
+  }, [page])
   useEffect(() => { void unwrap(api.version()).then(setVersion).catch(() => undefined) }, [])
   async function act<T>(operation: Promise<import('../shared/bridge').Reply<T>>): Promise<T> {
     setSaving(count => count + 1)
@@ -112,7 +122,13 @@ function Workspace({ data }: { data: Snapshot }) {
   const change = (command: Command) => act(api.command(command))
   const saveSettings = (settings: Partial<Settings>) => run(change({ type: 'settings', settings }))
   const navigate = (next: Page) => { setPage(next); if (next === 'task' && active?.taskId) setTaskId(active.taskId) }
-  const openDoc = (item: Document) => { setDocId(item.id); setPage('reading') }
+  const openDoc = (item: Document, position?: Position) => {
+    setJump(position ? { position, key: performance.now() } : undefined)
+    setDocId(item.id); setPage('reading')
+  }
+  const openResume = useRef<() => void>(() => undefined)
+  openResume.current = () => { if (resume) openTask(resume); else setPage('home') }
+  useEffect(() => { if (data.resumeRequest) openResume.current() }, [data.resumeRequest])
   function openTask(item: Task) {
     setTaskId(item.id)
     const document = state.documents.find(doc => doc.id === item.docId)
@@ -210,11 +226,13 @@ function Workspace({ data }: { data: Snapshot }) {
     void unwrap(api.ai(draft)).then(setAiAnswer).catch(error => announce(error.message, true)).finally(() => setAiBusy(false))
   }
   const taskActions = { startTask, chooseStatus, suggest, pause: (sessionId: string) => run(change({ type: 'pause', sessionId })),
-    end: setEnding, rest: setResting, capture: setCapturing, panel: () => run(act(api.desktop('panel'))) }
+    end: setEnding, rest: setResting, capture: (session?: Session) => setCapturing({ sessionId: session?.id ?? null, captureId: crypto.randomUUID() }), panel: () => run(act(api.desktop('panel'))) }
   const clock = useClock(active)
   const nav = [
     { page: 'home', icon: Home, text: '开始与继续' }, { page: 'task', icon: ListTodo, text: '当前任务' },
-    { page: 'reading', icon: BookOpen, text: '阅读工作区' }, { page: 'history', icon: History, text: '任务与记录' },
+    { page: 'reading', icon: BookOpen, text: '阅读工作区' },
+    { page: 'study', icon: Brain, text: '阅读复习' }, { page: 'inbox', icon: Inbox, text: '随手记收件箱' },
+    { page: 'history', icon: History, text: '任务与记录' },
     { page: 'settings', icon: SettingsIcon, text: '设置' }
   ] as const
 
@@ -229,7 +247,7 @@ function Workspace({ data }: { data: Snapshot }) {
         <div><span className={'state-dot ' + active?.status}/>{phaseName[active!.status]}</div>
         <strong>{activeTask.title}</strong><time>{formatDuration(clock.work)}</time>
       </button>}
-      <div className="sidebar-bottom"><button className="nav-item" onClick={taskActions.panel}><PanelTop size={17}/>轻量面板</button>
+      <div className="sidebar-bottom"><button className="nav-item" onClick={() => taskActions.capture(active)}><StickyNote size={17}/>随手记</button><button className="nav-item" onClick={taskActions.panel}><PanelTop size={17}/>轻量面板</button>
         <span><span className="state-dot"/>数据保存在本机</span></div>
     </aside>
 
@@ -262,7 +280,7 @@ function Workspace({ data }: { data: Snapshot }) {
             </section>
             <section className="card resume-card"><div className="eyebrow"><RotateCcw size={17}/>继续上次</div>
               {resume ? <><h2>{resume.title}</h2>
-                <p className="resume-next">{resume.card.next || resume.card.goal || '上次的任务与进度已经保存。'}</p>
+                <p className="resume-next">{resume.card.next || resume.card.progress || resume.card.goal || '上次的任务与进度已经保存。'}</p>
                 <button className="button primary" onClick={() => openTask(resume)}>打开继续卡片<ArrowRight size={16}/></button>
               </> : <><h2>继续卡片</h2><p>开始一个任务后，这里会保留目标、进度和下一步。</p></>}
             </section>
@@ -293,7 +311,7 @@ function Workspace({ data }: { data: Snapshot }) {
         {page === 'reading' && <>
           <div className="list-head reading-header"><h1>阅读工作区</h1>
             <div className="inline">
-              {state.documents.length > 0 && <select aria-label="选择文档" value={doc?.id ?? ''} onChange={event => setDocId(event.target.value)}>
+              {state.documents.length > 0 && <select aria-label="选择文档" value={doc?.id ?? ''} onChange={event => { setDocId(event.target.value); setJump(undefined) }}>
                 <option value="" disabled>选择已有文档</option>
                 {state.documents.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>}
@@ -308,19 +326,29 @@ function Workspace({ data }: { data: Snapshot }) {
                 <form className="inline" onSubmit={event => { event.preventDefault(); startReading(doc, Number(new FormData(event.currentTarget).get('plan'))) }}>
                   <PlanSelect/><button className="button primary" disabled={actionBusy}><Play size={16}/>开始阅读</button>
                 </form></section>}
-            <Reader key={doc.id} doc={doc} task={readingTask} state={state}
+            <Reader key={doc.id + (jump?.key ?? '')} doc={doc} task={readingTask} state={state}
+              initialPosition={jump?.position} onStudy={setStudyDraft}
               onPosition={position => { void unwrap(api.command({ type: 'position', docId: doc.id, position }))
                 .catch(error => announce(error.message, true)) }}
               onNote={async (position, text) => { await change({ type: 'note', docId: doc.id, position, text }); announce('笔记已保存。') }}
               onExplain={askAi} onSettings={saveSettings}/>
             <button className="link danger" onClick={() => setConfirm({
               title: '移除应用中的文档副本', label: '移除副本',
-              detail: '关联笔记会删除，旧任务和历史会话保留。正在读这份文档的会话会结束。用户最初的原文件会保留。',
+              detail: '关联笔记和复习卡会删除，旧任务和历史会话保留。正在读这份文档的会话会结束。用户最初的原文件会保留。',
               go: async () => { await change({ type: 'deleteDocument', docId: doc.id }); setDocId(undefined) }
             })}>移除文档副本</button>
           </> : <section className="card empty"><BookOpen size={31}/><h2>打开一份文档</h2><p>支持 PDF、Markdown 和 UTF-8 文本。</p>
             {!state.documents.length && !importing && <button className="button primary" onClick={() => void importDocument()}><Upload size={16}/>导入文档</button>}</section>}
         </>}
+        {page === 'study' && <StudyPage cards={state.studyCards} documents={state.documents} now={studyClock} openSource={openDoc}
+          saveReview={async (card, rating) => {
+            await change({ type: 'studyReview', cardId: card.id, expectedReviews: card.reviews.length, rating })
+            setStudyClock(Date.now())
+            announce('复习结果已保存。')
+          }} remove={(card: StudyCard) => setConfirm({ title: '删除复习卡', detail: card.question, label: '删除复习卡',
+            go: async () => { await change({ type: 'studyDelete', cardId: card.id }); announce('复习卡已删除。') }
+          })}/>}
+        {page === 'inbox' && <ThoughtInbox state={state} change={change} capture={() => taskActions.capture(active)}/>}
         {page === 'history' && <HistoryPage state={state} openTask={openTask} chooseStatus={chooseStatus} change={change}/>}
         {page === 'settings' && <SettingsPage key={data.restoring ? 'restoring' : 'ready'} data={data} version={version}
           change={change} onAction={async (action, message) => {
@@ -355,9 +383,15 @@ function Workspace({ data }: { data: Snapshot }) {
       </form>
     </Modal>}
     {capturing && <CaptureForm close={() => setCapturing(undefined)} onSave={async text => {
-      await change({ type: 'thought', sessionId: capturing.id, text })
+      await change({ type: 'capture', sessionId: capturing.sessionId, captureId: capturing.captureId, text })
       setCapturing(undefined); announce('念头已保存。')
     }}/>}
+    {studyDraft && doc && <Modal title="制作复习卡" close={() => setStudyDraft(undefined)}>
+      <StudyCardForm draft={studyDraft} doc={doc} close={() => setStudyDraft(undefined)} save={async (question, answer) => {
+        await change({ type: 'studyCreate', docId: doc.id, position: studyDraft.position, question, answer })
+        setStudyDraft(undefined); announce('复习卡已保存，可以到「阅读复习」开始回忆。')
+      }}/>
+    </Modal>}
     {aiDraft && <AiPreview draft={aiDraft} endpoint={state.settings.endpoint} close={() => setAiDraft(undefined)} send={submitAi}/>}
     {aiAnswer && <AiAnswer answer={aiAnswer} state={state} close={() => setAiAnswer(undefined)} adopt={async (index, edit) => {
       await act(api.adoptAi(aiAnswer.id, index, edit)); setAiAnswer(undefined); announce(aiAnswer.draft.kind === 'explain' ? '已保存到原文笔记。' : '已更新原任务的下一步。')
@@ -519,6 +553,34 @@ function CaptureForm({ close, onSave, embedded = false }: { close: () => void; o
   return embedded ? form : <Modal title="分心随手记" close={close}>{form}</Modal>
 }
 
+function ThoughtInbox({ state, change, capture }: { state: State; change: Change; capture: () => void }) {
+  const [showHandled, setShowHandled] = useState(false)
+  const taskNames = new Map(state.tasks.map(task => [task.id, task.title]))
+  const thoughts = [
+    ...state.inbox.map(thought => ({ ...thought, sessionId: null, origin: '未关联会话' })),
+    ...state.sessions.flatMap(session => session.thoughts.map(thought => ({
+      ...thought, sessionId: session.id, origin: taskNames.get(session.taskId) ?? '工作会话'
+    })))
+  ]
+  const visible = thoughts.filter(item => showHandled || !item.handled).sort((a, b) => b.at - a.at)
+  return <>
+    <div className="page-heading"><h1>随手记收件箱</h1><p>把临时念头留在这里，空下来再处理。</p></div>
+    <section className="card listing">
+      <div className="list-head"><button className="button primary" onClick={capture}><StickyNote size={16}/>记录念头</button>
+        <label className="check"><input type="checkbox" checked={showHandled}
+          onChange={event => setShowHandled(event.target.checked)}/>显示已处理</label></div>
+      {visible.length === 0 && <p className="empty-line">这里暂时没有{showHandled ? '' : '待处理的'}念头。</p>}
+      {visible.map(item => <article className="inbox-item" key={item.id}>
+        <div><span className="muted">{item.origin} · {dateLabel(item.at)}</span><p>{item.text}</p></div>
+        {item.handled ? <span className="muted">已处理</span> : <div className="inline">
+          <button className="link" onClick={() => void change({ type: 'handleThought', sessionId: item.sessionId, thoughtId: item.id, createTask: true }).catch(() => undefined)}>转为任务</button>
+          <button className="link" onClick={() => void change({ type: 'handleThought', sessionId: item.sessionId, thoughtId: item.id, createTask: false }).catch(() => undefined)}>标为已处理</button>
+        </div>}
+      </article>)}
+    </section>
+  </>
+}
+
 function HistoryPage({ state, openTask, chooseStatus, change }: {
   state: State; openTask: (task: Task) => void; chooseStatus: TaskActions['chooseStatus']; change: Change
 }) {
@@ -635,7 +697,7 @@ function SettingsPage({ data, version, change, onAction, saveKey, desktop }: {
         setChecking(true)
         try {
           const tag = await unwrap(api.checkUpdate())
-          setUpdateStatus(tag ? (tag.replace(/^v/, '') === version ? '当前已是最新正式版本。' : '最新公开正式版本：' + tag) : '目前没有正式版本。')
+          setUpdateStatus(tag ? (tag.replace(/^v/, '') === version ? '当前版本与发布页一致。' : 'GitHub 发布版本：' + tag) : '目前没有公开版本。')
         } catch (error) { setUpdateStatus((error as Error).message) }
         finally { setChecking(false) }
       }}>{checking ? '正在检查…' : '检查更新'}</button>
@@ -693,7 +755,8 @@ function Compact({ kind, state, restoring }: { kind: 'panel' | 'capture'; state:
   const task = state.tasks.find(item => item.id === session?.taskId)
   const { work } = useClock(session)
   const [message, setMessage] = useState('')
-  const [capture, setCapture] = useState<Session>()
+  const [capture, setCapture] = useState<{ sessionId: string | null; captureId: string }>()
+  const [standalone] = useState(() => ({ sessionId: session?.id ?? null, captureId: crypto.randomUUID() }))
   useEffect(() => api.onNotice(setMessage), [])
   async function act(operation: Promise<import('../shared/bridge').Reply<unknown>>) {
     try { await unwrap(operation) } catch (error) { setMessage((error as Error).message); throw error }
@@ -706,21 +769,28 @@ function Compact({ kind, state, restoring }: { kind: 'panel' | 'capture'; state:
         aria-label="轻量面板置顶" onClick={() => run(act(api.command({ type: 'settings', settings: { panelTop: !state.settings.panelTop } })))}><Pin size={17}/></button>}
     </div>
     {message && <p className="notice" role="status">{message}</p>}
-    {restoring ? <p role="status">正在恢复数据…</p> : !session || !task ? <>
-      <p>开始一个任务后，这里会显示当前目标。</p><button className="button primary" onClick={() => run(act(api.desktop('main')))}>打开工作台</button>
-    </> : kind === 'capture' ? <CaptureForm embedded close={close} onSave={async text => {
-      await act(api.command({ type: 'thought', sessionId: session.id, text }))
-      close()
-    }}/> : <>
+    {restoring ? <p role="status">正在恢复数据…</p> : kind === 'capture' ? <>
+      <p className="muted capture-context">{standalone.sessionId
+        ? state.tasks.find(item => item.id === state.sessions.find(value => value.id === standalone.sessionId)?.taskId)?.title ?? '随手记收件箱'
+        : '随手记收件箱'}</p>
+      <CaptureForm embedded close={close} onSave={async text => {
+        await act(api.command({ type: 'capture', ...standalone, text }))
+        close()
+      }}/>
+    </> : !session || !task ? <>
+      <p>开始一个任务后，这里会显示当前目标。</p><div className="inline"><button className="button primary" onClick={() => run(act(api.desktop('resume')))}>打开继续卡片</button>
+        <button className="button" onClick={() => setCapture({ sessionId: null, captureId: crypto.randomUUID() })}>随手记</button></div>
+    </> : <>
       <div className="eyebrow"><span className={'state-dot ' + session.status}/>{phaseName[session.status]}</div>
       <h1>{task.title}</h1>{(task.card.goal || task.card.next) && <p>{task.card.goal || task.card.next}</p>}
       <time className="compact-time">{formatDuration(work)}</time>
       <div className="inline"><button className="button primary" onClick={() => run(act(api.command({ type: session.status === 'working' ? 'pause' : 'resume', sessionId: session.id })))}>
         {session.status === 'working' ? <><Pause size={16}/>暂停</> : <><Play size={16}/>继续工作</>}
-      </button><button className="button" onClick={() => setCapture(session)}><StickyNote size={16}/>随手记</button></div>
+      </button><button className="button" onClick={() => setCapture({ sessionId: session.id, captureId: crypto.randomUUID() })}><StickyNote size={16}/>随手记</button>
+      <button className="link" onClick={() => run(act(api.desktop('resume')))}>打开继续卡片</button></div>
     </>}
     {capture && <CaptureForm close={() => setCapture(undefined)} onSave={async text => {
-      await act(api.command({ type: 'thought', sessionId: capture.id, text })); setCapture(undefined); setMessage('念头已保存。')
+      await act(api.command({ type: 'capture', ...capture, text })); setCapture(undefined); setMessage('念头已保存。')
     }}/>}
   </main>
 }
