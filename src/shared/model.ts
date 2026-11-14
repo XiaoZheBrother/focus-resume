@@ -36,6 +36,13 @@ export const taskSchema = z.object({
   status: z.enum(['open', 'done', 'archived']), docId: id.nullable(),
   card: cardSchema, updatedAt: timestamp, conclusion: text
 })
+const thoughtSchema = z.object({ id, text, at: timestamp, handled: z.boolean() })
+export const reviewRating = z.enum(['again', 'partial', 'remembered'])
+export const studyCardSchema = z.object({
+  id, docId: id, position, question: z.string().trim().min(1).max(500), answer: text,
+  createdAt: timestamp, dueAt: timestamp, intervalDays: z.number().int().min(0).max(30),
+  reviews: z.array(z.object({ at: timestamp, rating: reviewRating }))
+})
 const segmentSchema = z.object({
   kind: z.enum(['work', 'rest']), start: timestamp, duration: timestamp
 })
@@ -46,13 +53,24 @@ export const sessionSchema = z.object({
   outcome: z.enum(['', 'done', 'partial', 'unmet']), reason: z.string().max(40),
   planMinutes: minutes, restMinutes: minutes, planNotified: z.boolean(), restNotified: z.boolean(),
   segments: z.array(segmentSchema),
-  thoughts: z.array(z.object({ id, text, at: timestamp, handled: z.boolean() }))
+  thoughts: z.array(thoughtSchema)
 })
-export const stateSchema = z.object({
+const baseState = z.object({
   version: z.literal(1), settings: settingsSchema, tasks: z.array(taskSchema),
   documents: z.array(documentSchema), notes: z.array(noteSchema), sessions: z.array(sessionSchema)
 })
+const stateSchema = baseState.extend({
+  version: z.literal(2), inbox: z.array(thoughtSchema), studyCards: z.array(studyCardSchema)
+})
+export function parseState(raw: unknown): State {
+  if (typeof raw === 'object' && raw !== null && 'version' in raw && raw.version === 1) {
+    return { ...baseState.parse(raw), version: 2, inbox: [], studyCards: [] }
+  }
+  return stateSchema.parse(raw)
+}
 export type State = z.infer<typeof stateSchema>
+export type StudyCard = z.infer<typeof studyCardSchema>
+export type ReviewRating = z.infer<typeof reviewRating>
 export type Task = z.infer<typeof taskSchema>
 export type Session = z.infer<typeof sessionSchema>
 export type Document = z.infer<typeof documentSchema>
@@ -60,7 +78,7 @@ export type Position = z.infer<typeof position>
 export type Settings = z.infer<typeof settingsSchema>
 export type Outcome = Session['outcome']
 export const freshState = (): State => ({
-  version: 1, settings: { ...defaults }, tasks: [], documents: [], notes: [], sessions: []
+  version: 2, settings: { ...defaults }, tasks: [], documents: [], notes: [], sessions: [], inbox: [], studyCards: []
 })
 export const activeSession = (state: State) => state.sessions.find(session => session.status !== 'ended')
 export const workMs = (session?: Session) => session?.segments.reduce(
@@ -81,7 +99,11 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('position'), docId: id, position }),
   z.object({ type: z.literal('note'), docId: id, position, text: text.trim().min(1) }),
   z.object({ type: z.literal('thought'), sessionId: id, text: text.trim().min(1) }),
-  z.object({ type: z.literal('handleThought'), sessionId: id, thoughtId: id, createTask: z.boolean() }),
+  z.object({ type: z.literal('capture'), sessionId: id.nullable(), captureId: id, text: text.trim().min(1) }),
+  z.object({ type: z.literal('handleThought'), sessionId: id.nullable(), thoughtId: id, createTask: z.boolean() }),
+  z.object({ type: z.literal('studyCreate'), docId: id, position, question: studyCardSchema.shape.question, answer: text.trim().min(1) }),
+  z.object({ type: z.literal('studyReview'), cardId: id, expectedReviews: z.number().int().nonnegative(), rating: reviewRating }),
+  z.object({ type: z.literal('studyDelete'), cardId: id }),
   z.object({ type: z.literal('deleteDocument'), docId: id }),
   z.object({ type: z.literal('settings'), settings: settingsSchema.partial() })
 ])

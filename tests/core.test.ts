@@ -80,3 +80,46 @@ test('capturing a thought does not switch, and creating a task from it is idempo
   assert.equal(state.tasks[1].title, 'Reply to email')
   assert.equal(activeSession(state), undefined)
 })
+
+test('quick capture survives a session switch and can be turned into a task once', () => {
+  const state = freshState()
+  const captureId = '96a8590f-a408-4083-9ff0-bb1257aa223f'
+  const capture = { type: 'capture' as const, sessionId: null, captureId, text: 'Inbox thought' }
+  applyCommand(state, capture, 1)
+  applyCommand(state, capture, 2)
+  assert.equal(state.inbox.length, 1)
+  start(state, 'Read chapter', 3)
+  const previous = activeSession(state)!
+  start(state, 'Current task', 4)
+  applyCommand(state, { ...capture, sessionId: previous.id, text: 'Original thought' }, 5)
+  assert.equal(previous.thoughts[0].text, 'Original thought')
+  const handle = { type: 'handleThought' as const, sessionId: null, thoughtId: captureId, createTask: true }
+  applyCommand(state, handle, 6)
+  applyCommand(state, handle, 7)
+  assert.equal(state.tasks.filter(task => task.title === 'Inbox thought').length, 1)
+  assert.equal(activeSession(state)?.status, 'working')
+})
+
+test('review intervals handle partial recall and reject duplicate or early reviews', () => {
+  const state = freshState()
+  const docId = 'b4f1f66d-6561-448f-96ad-35c273a31cb9'
+  const position = { index: 3, offset: .25 }
+  state.documents.push({ id: docId, name: 'test.md', hash: 'a'.repeat(64), size: 1, format: 'md', createdAt: 0, position })
+  applyCommand(state, { type: 'studyCreate', docId, position, question: 'How?', answer: 'Example' }, 12)
+  const [card] = state.studyCards
+  const rating = { type: 'studyReview' as const, cardId: card.id, expectedReviews: 0, rating: 'again' as const }
+  applyCommand(state, rating, 12)
+  assert.equal(card.dueAt, 600_012)
+  assert.throws(() => applyCommand(state, rating, 12), /复习记录已变化/)
+  assert.throws(() => applyCommand(state, { ...rating, expectedReviews: 1 }, 13), /还没到/)
+  applyCommand(state, { ...rating, expectedReviews: 1, rating: 'remembered' }, card.dueAt)
+  assert.equal(card.intervalDays, 1)
+  applyCommand(state, { ...rating, expectedReviews: 2, rating: 'remembered' }, card.dueAt)
+  assert.equal(card.intervalDays, 3)
+  applyCommand(state, { ...rating, expectedReviews: 3, rating: 'partial' }, card.dueAt)
+  assert.equal(card.intervalDays, 1)
+  assert.deepEqual(card.position, position)
+  applyCommand(state, { type: 'deleteDocument', docId }, card.dueAt)
+  assert.deepEqual(state.studyCards, [])
+  assert.throws(() => applyCommand(state, rating, 1), /已移除/)
+})

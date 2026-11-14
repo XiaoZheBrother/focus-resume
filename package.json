@@ -1,6 +1,6 @@
 {
   "name": "focus-resume",
-  "version": "0.1.0-alpha.1",
+  "version": "0.3.0",
   "description": "Local-first Electron focus timer, interruption recovery, and document reading workspace",
   "author": "XiaoZheBrother and Focus Resume contributors",
   "license": "MIT",

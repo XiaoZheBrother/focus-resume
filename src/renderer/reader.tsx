@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
-import { ArrowLeft, ArrowRight, Crosshair, FileText, Minus, Plus, Sparkles, StickyNote } from 'lucide-react'
+import { ArrowLeft, ArrowRight, BookmarkPlus, Crosshair, FileText, Minus, Plus, Sparkles, StickyNote } from 'lucide-react'
 import Markdown from 'react-markdown'
 import { getDocument, GlobalWorkerOptions, TextLayer } from 'pdfjs-dist'
 import type { PDFDocumentProxy, PDFDocumentLoadingTask, RenderTask } from 'pdfjs-dist'
 import 'pdfjs-dist/web/pdf_viewer.css'
 import { api, unwrap } from './api'
+import type { StudyDraft } from './study'
 import type { AiDraft } from '../shared/bridge'
 import type { Document, Position, Settings, State, Task } from '../shared/model'
 
@@ -69,6 +70,8 @@ export function paragraphs(text: string, markdown: boolean) {
 type ReaderProps = {
   doc: Document
   task?: Task
+  initialPosition?: Position
+  onStudy: (draft: StudyDraft) => void
   state: State
   onPosition: (position: Position) => void
   onNote: (position: Position, text: string) => Promise<void>
@@ -80,7 +83,7 @@ export function Reader(props: ReaderProps) {
   const { doc, state, task, onPosition, onNote, onExplain, onSettings } = props
   const [source, setSource] = useState<{ pdf?: PDFDocumentProxy; parts?: string[] }>({})
   const [issue, setIssue] = useState('')
-  const [current, setCurrent] = useState(doc.position)
+  const [current, setCurrent] = useState(props.initialPosition ?? doc.position)
   const [selection, setSelection] = useState<{ text: string; position: Position }>()
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
@@ -194,6 +197,10 @@ export function Reader(props: ReaderProps) {
         </select>
       </label>}
       {source.parts && <button className={'button small ' + (prefs.focus ? 'active' : '')} aria-pressed={prefs.focus} onClick={() => onSettings({ focus: !prefs.focus })}><Crosshair size={15}/>段落聚焦</button>}
+      <button className="button small" disabled={!!issue || (!source.parts && !source.pdf)} onClick={() => props.onStudy({
+        position: selection?.position ?? currentRef.current,
+        answer: selection && selection.text.length <= 6000 ? selection.text : ''
+      })}><BookmarkPlus size={15}/>制作复习卡</button>
       <button className="button small" disabled={!selection} onClick={() => selection && onExplain({
         kind: 'explain', docId: doc.id, taskId: task?.id ?? null, position: selection.position, input: selection.text
       })}><Sparkles size={15}/>解释选中文本</button>

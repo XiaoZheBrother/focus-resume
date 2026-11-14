@@ -33,6 +33,7 @@ let state: State
 let secretPath: string
 let revision = 0
 let generation = 0
+let resumeRequest = 0
 let lastTick = performance.now()
 let quitting = false
 let restoring = false
@@ -40,6 +41,7 @@ let issue = ''
 let interval: NodeJS.Timeout
 let request: AbortController | undefined
 let readingImport: AbortController | undefined
+let captureReturn: BrowserWindow | null = null
 let staged: { ticket: string; doc: Document; bytes: Uint8Array } | undefined
 const responses = new Map<string, { result: AiResult; next: string | undefined; generation: number }>()
 const notices: Notification[] = []
@@ -49,7 +51,7 @@ const canStoreSecret = () => safeStorage.isEncryptionAvailable() &&
 const hasSecret = () => {
   try { return canStoreSecret() && !!readFileSync(secretPath).length } catch { return false }
 }
-const snapshot = (): Snapshot => ({ state, revision, issue, secretReady: hasSecret(), restoring })
+const snapshot = (): Snapshot => ({ state, revision, issue, secretReady: hasSecret(), restoring, workspaceVersion: generation, resumeRequest })
 const eachWindow = (channel: string, data: unknown) => {
   for (const win of windows.values()) if (!win.isDestroyed()) win.webContents.send(channel, data)
 }
@@ -85,6 +87,17 @@ function systemPause(reason: string) {
   catch { notice('本地保存失败，请检查存储空间。') }
 }
 
+function showResume() {
+  resumeRequest += 1
+  createWindow('main')
+  publish()
+}
+
+function openCapture() {
+  if (!windows.has('capture')) captureReturn = BrowserWindow.getFocusedWindow()
+  createWindow('capture')
+}
+
 function createWindow(kind: WindowKind) {
   const existing = windows.get(kind)
   if (existing && !existing.isDestroyed()) {
@@ -96,7 +109,7 @@ function createWindow(kind: WindowKind) {
   const win = new BrowserWindow({
     title: kind === 'main' ? 'Focus Resume' : kind === 'panel' ? 'Focus Resume · 当前任务' : 'Focus Resume · 随手记',
     width: kind === 'main' ? 1200 : 425,
-    height: kind === 'main' ? 860 : kind === 'panel' ? 355 : 280,
+    height: kind === 'main' ? 860 : kind === 'panel' ? 420 : 330,
     minWidth: kind === 'main' ? 720 : 320, minHeight: kind === 'main' ? 550 : 215,
     autoHideMenuBar: true, show: false,
     alwaysOnTop: kind === 'capture' || (kind === 'panel' && state.settings.panelTop),
@@ -127,7 +140,14 @@ function createWindow(kind: WindowKind) {
     }
     win.hide()
   })
-  win.on('closed', () => windows.delete(kind))
+  win.on('closed', () => {
+    windows.delete(kind)
+    if (kind === 'capture') {
+      const previous = captureReturn
+      captureReturn = null
+      if (previous && !previous.isDestroyed() && previous.isVisible()) previous.focus()
+    }
+  })
   void win.loadURL(rendererUrl + '#' + kind)
   return win
 }
@@ -138,10 +158,7 @@ function configureDesktop() {
   globalShortcut.unregisterAll()
   issue = ''
   try {
-    if (state.settings.shortcut && !globalShortcut.register(state.settings.shortcut, () => {
-      if (!activeSession(state)) createWindow('main')
-      else createWindow('capture')
-    })) issue = '全局快捷键已被占用，可以在设置里更换。'
+    if (state.settings.shortcut && !globalShortcut.register(state.settings.shortcut, openCapture)) issue = '全局快捷键已被占用，可以在设置里更换。'
   } catch {
     issue = '全局快捷键格式无效，可以在设置里更换。'
   }
@@ -172,6 +189,7 @@ function commitReplacement(replacement: State, source?: ReturnType<typeof inspec
   revision += 1
   lastTick = performance.now()
   generation += 1
+  resumeRequest = 0
   responses.clear()
   try { clearSecret() } catch { notice('旧模型凭据未删除，请在设置中手动移除。') }
 }
@@ -193,14 +211,15 @@ function registerIpc() {
   handle('version', () => app.getVersion())
   handle('checkUpdate', async () => {
     try {
-      const response = await fetch('https://api.github.com/repos/XiaoZheBrother/focus-resume/releases/latest', {
+      const response = await fetch('https://api.github.com/repos/XiaoZheBrother/focus-resume/releases?per_page=20', {
         headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Focus-Resume' },
         signal: AbortSignal.timeout(8000), redirect: 'error'
       })
       if (response.status === 404) return null
       if (!response.ok) throw new Error()
-      const body = await response.json()
-      return z.string().max(60).parse(body.tag_name)
+      const releases = z.array(z.object({ tag_name: z.string().max(60), draft: z.boolean(), prerelease: z.boolean() })).parse(await response.json())
+      const published = releases.filter(release => !release.draft)
+      return (/-/.test(app.getVersion()) ? published[0] : published.find(release => !release.prerelease) ?? published[0])?.tag_name ?? null
     } catch { throw new Error('无法检查更新。可以打开 Releases 手动查看。') }
   })
   handle('command', (_win, raw) => {
@@ -394,7 +413,8 @@ function registerIpc() {
   handle('desktop', (win, action) => {
     switch (action) {
       case 'panel': createWindow('panel'); return
-      case 'capture': createWindow('capture'); return
+      case 'capture': openCapture(); return
+      case 'resume': showResume(); return
       case 'main': createWindow('main'); return
       case 'close': win.close(); return
       case 'quit': app.quit(); return
@@ -408,6 +428,7 @@ if (!app.requestSingleInstanceLock()) app.quit()
 else {
   app.on('second-instance', () => { if (state) createWindow('main') })
   app.on('activate', () => { if (state) createWindow('main') })
+  if (process.platform === 'win32') app.setAppUserModelId('io.github.xiaozhebrother.focusresume')
   app.on('window-all-closed', () => { if (!tray && process.platform !== 'darwin') app.quit() })
   app.on('before-quit', () => {
     quitting = true
@@ -441,7 +462,8 @@ else {
         tray.setContextMenu(Menu.buildFromTemplate([
           { label: '打开 Focus Resume', click: () => createWindow('main') },
           { label: '打开轻量面板', click: () => createWindow('panel') },
-          { label: '随手记', click: () => createWindow('capture') },
+          { label: '打开继续卡片', click: showResume },
+          { label: '随手记', click: openCapture },
           { label: '退出', click: () => app.quit() }
         ]))
         tray.on('click', () => createWindow('main'))

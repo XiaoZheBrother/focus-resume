@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { activeSession, emptyCard, workMs, type Command, type Session, type State, type Task } from './shared/model'
+import { activeSession, emptyCard, workMs, type Command, type Session, type State, type Task, type ReviewRating } from './shared/model'
 
 export function elapsed(state: State, now: number, monotonicDelta: number) {
   const session = activeSession(state)
@@ -36,6 +36,13 @@ export function reminders(state: State) {
     messages.push('休息时间到了，准备好后可以继续。')
   }
   return messages
+}
+
+const day = 24 * 60 * 60_000
+function reviewInterval(previous: number, rating: ReviewRating) {
+  if (rating === 'again') return 0
+  if (rating === 'partial') return 1
+  return [1, 3, 7, 14, 30].find(interval => interval > previous) ?? 30
 }
 
 export function applyCommand(state: State, command: Command, now: number) {
@@ -148,6 +155,7 @@ export function applyCommand(state: State, command: Command, now: number) {
       requireDocument(command.docId)
       state.documents = state.documents.filter(doc => doc.id !== command.docId)
       state.notes = state.notes.filter(note => note.docId !== command.docId)
+      state.studyCards = state.studyCards.filter(card => card.docId !== command.docId)
       for (const task of state.tasks.filter(task => task.docId === command.docId)) {
         if (active?.taskId === task.id) end(active, 'document-deleted')
         task.docId = null
@@ -158,14 +166,43 @@ export function applyCommand(state: State, command: Command, now: number) {
       if (active?.id !== command.sessionId) throw new Error('本次会话已结束。')
       active.thoughts.push({ id: randomUUID(), text: command.text, at: now, handled: false })
       return
+    case 'capture': {
+      const original = state.sessions.find(session => session.id === command.sessionId)
+      const target = original?.thoughts ?? state.inbox
+      if (!target.some(thought => thought.id === command.captureId)) {
+        target.push({ id: command.captureId, text: command.text, at: now, handled: false })
+      }
+      return
+    }
     case 'handleThought': {
-      const thought = state.sessions.find(session => session.id === command.sessionId)
-        ?.thoughts.find(item => item.id === command.thoughtId)
+      const list = command.sessionId === null ? state.inbox : state.sessions.find(session => session.id === command.sessionId)?.thoughts
+      const thought = list?.find(item => item.id === command.thoughtId)
       if (!thought || thought.handled) return
       if (command.createTask) create(thought.text.slice(0, 200), null)
       thought.handled = true
       return
     }
+    case 'studyCreate': {
+      requireDocument(command.docId)
+      state.studyCards.push({
+        id: randomUUID(), docId: command.docId, position: command.position, question: command.question,
+        answer: command.answer, createdAt: now, dueAt: now, intervalDays: 0, reviews: []
+      })
+      return
+    }
+    case 'studyReview': {
+      const card = state.studyCards.find(item => item.id === command.cardId)
+      if (!card) throw new Error('这张复习卡已移除。')
+      if (card.reviews.length !== command.expectedReviews) throw new Error('复习记录已变化，请重新打开卡片。')
+      if (card.dueAt > now) throw new Error('这张卡片的下次复习时间还没到。')
+      card.intervalDays = reviewInterval(card.intervalDays, command.rating)
+      card.dueAt = now + (card.intervalDays ? card.intervalDays * day : 10 * 60_000)
+      card.reviews.push({ at: now, rating: command.rating })
+      return
+    }
+    case 'studyDelete':
+      state.studyCards = state.studyCards.filter(card => card.id !== command.cardId)
+      return
     case 'settings':
       Object.assign(state.settings, command.settings)
   }
