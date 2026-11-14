@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -73,4 +73,45 @@ test('corrupt backup bytes roll back even when a valid snapshot was already load
     assert.throws(() => inspectBackup(path), /损坏/)
     assert.equal(local.read().tasks[0].title, 'Keep me')
   } finally { local.close(); source.close(); rmSync(root, { recursive: true, force: true }) }
+})
+
+test('v0.1 databases and backups migrate with the original data intact', () => {
+  const root = mkdtempSync(join(tmpdir(), 'focus-v1-'))
+  const path = join(root, 'focus.sqlite')
+  const legacy = new DatabaseSync(path)
+  const { inbox: _inbox, studyCards: _studyCards, ...prior } = freshState()
+  const v1 = { ...prior, version: 1 }
+  const doc: Document = { id: randomUUID(), name: 'legacy.txt', hash: fileHash(Buffer.from('original')), size: 8,
+    format: 'txt', createdAt: 1, position: { index: 0, offset: .5 } }
+  v1.documents.push(doc)
+  legacy.exec('CREATE TABLE snapshot (id INTEGER PRIMARY KEY, json TEXT NOT NULL); CREATE TABLE documents (id TEXT PRIMARY KEY, bytes BLOB NOT NULL); PRAGMA user_version = 1;')
+  legacy.prepare('INSERT INTO snapshot VALUES (1, ?)').run(JSON.stringify(v1))
+  legacy.prepare('INSERT INTO documents VALUES (?, ?)').run(doc.id, Buffer.from('original'))
+  legacy.close()
+  const store = new Store(path)
+  try {
+    const state = store.read()
+    assert.equal(state.version, 2)
+    assert.deepEqual(state.studyCards, [])
+    assert.deepEqual(state.inbox, [])
+    assert.deepEqual(state.documents[0], doc)
+    const oldCopies = readdirSync(root).filter(name => name.endsWith('.focusbackup'))
+    assert.equal(oldCopies.length, 1)
+    const backup = inspectBackup(join(root, oldCopies[0]))
+    try {
+      assert.deepEqual(backup.state.documents, [doc])
+      assert.equal(backup.source.prepare('PRAGMA user_version').get()?.user_version, 1)
+    } finally { backup.source.close() }
+    applyCommand(state, { type: 'studyCreate', docId: doc.id, position: doc.position, question: 'Old text?', answer: 'original' }, 100)
+    applyCommand(state, { type: 'capture', sessionId: null, captureId: randomUUID(), text: 'Remember this' }, 101)
+    store.save(state)
+    const v2Path = join(root, 'new.focusbackup')
+    store.backup(v2Path)
+    const current = inspectBackup(v2Path)
+    try {
+      assert.equal(current.state.studyCards[0].answer, 'original')
+      assert.equal(current.state.inbox[0].text, 'Remember this')
+      assert.equal(fileHash(store.bytes(doc.id)), doc.hash)
+    } finally { current.source.close() }
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }) }
 })
