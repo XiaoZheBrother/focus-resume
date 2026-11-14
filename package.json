@@ -1,0 +1,63 @@
+{
+  "name": "focus-resume",
+  "version": "0.1.0-alpha.1",
+  "description": "Local-first Electron focus timer, interruption recovery, and document reading workspace",
+  "author": "XiaoZheBrother and Focus Resume contributors",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/main.cjs",
+  "repository": "https://github.com/XiaoZheBrother/focus-resume",
+  "scripts": {
+    "start": "npm run build && electron .",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:mac": "npm run build && electron-builder --mac dmg --arm64 --publish never",
+    "test:desktop": "npm run build && node scripts/desktop-smoke.mjs"
+  },
+  "build": {
+    "appId": "io.github.xiaozhebrother.focusresume",
+    "productName": "Focus Resume",
+    "artifactName": "Focus-Resume-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "LICENSE"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dmg"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.0",
+    "lucide-react": "^0.552.0",
+    "pdfjs-dist": "^6.5.438",
+    "playwright": "^1.65.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "zod": "^4.0.0"
+  }
+}
