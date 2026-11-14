@@ -104,7 +104,7 @@ try {
   await click('暂停')
   await page.getByText('已暂停', { exact: true }).first().waitFor()
   await click('继续工作')
-  await click('随手记')
+  await page.getByRole('main').getByRole('button', { name: '随手记', exact: true }).click()
   await page.getByLabel('记下临时想到的事').fill('回邮件')
   await click('保存并返回')
   const working = (await snapshot()).state.sessions[0]
@@ -146,6 +146,13 @@ try {
   await click('回到原文')
   await page.getByRole('heading', { name: '第一节', exact: true }).waitFor()
   assert.equal((await snapshot()).state.sessions.length, 2)
+  const panelWindow = app.waitForEvent('window')
+  await invoke('desktop', 'panel')
+  const panel = await panelWindow
+  await navigate('开始与继续')
+  await panel.getByRole('button', { name: '打开继续卡片' }).click()
+  await page.getByRole('heading', { name: '阅读工作区' }).waitFor()
+  await panel.close()
   await rm(source)
 
   const endpoint = 'http://127.0.0.1:' + mock.address().port + '/v1'
