@@ -20,6 +20,8 @@ export type Snapshot = {
   issue: string
   secretReady: boolean
   restoring: boolean
+  workspaceVersion: number
+  resumeRequest: number
 }
 export type Reply<T> = { ok: true; value: T } | { ok: false; error: string }
 export type ImportDraft = { ticket: string; doc: Document; bytes: Uint8Array } | { existing: Document }
@@ -39,7 +41,7 @@ export interface Bridge {
   checkUpdate(): Promise<Reply<string | null>>
   cancelAi(): Promise<Reply<void>>
   adoptAi(id: string, index: number, edit?: string): Promise<Reply<void>>
-  desktop(action: 'panel' | 'capture' | 'main' | 'close' | 'quit' | 'releases'): Promise<Reply<void>>
+  desktop(action: 'panel' | 'capture' | 'main' | 'resume' | 'close' | 'quit' | 'releases'): Promise<Reply<void>>
   version(): Promise<Reply<string>>
   onState(listener: (value: Snapshot) => void): () => void
   onNotice(listener: (value: string) => void): () => void
