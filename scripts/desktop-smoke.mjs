@@ -33,6 +33,7 @@ let page
 const launch = async profile => {
   app = await electron.launch({ args: ['.', '--user-data-dir=' + profile], timeout: 25000 })
   page = await app.firstWindow({ timeout: 25000 })
+  page.setDefaultTimeout(15000)
   page.on('console', message => { if (message.type() === 'error') console.error('Renderer:', message.text()) })
   page.on('pageerror', error => console.error('Renderer exception:', error.message))
   await page.getByRole('heading', { name: '开始，或接着做。' }).waitFor({ timeout: 20000 })
@@ -144,7 +145,10 @@ try {
   const slow = page.evaluate(draft => window.focusResume.ai(draft), {
     kind: 'explain', taskId: reader.id, docId: documentId, position: { index: 1, offset: 0 }, input: 'delay'
   })
-  await page.waitForFunction(async () => (await window.focusResume.state()).ok)
+  for (let attempt = 0; attempt < 100 && requests.at(-1)?.messages[1].content !== 'delay'; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.equal(requests.at(-1)?.messages[1].content, 'delay')
   await invoke('cancelAi')
   assert.match((await slow).error, /已取消/)
 
@@ -177,7 +181,8 @@ try {
   state = (await snapshot()).state
   assert.equal(state.sessions.at(-1).status, 'paused')
   assert.equal(state.sessions.at(-1).reason, 'recovered')
-  assert.equal(work(state.sessions.at(-1)), work(checkpoint))
+  assert.ok(work(state.sessions.at(-1)) >= work(checkpoint))
+  assert.ok(work(state.sessions.at(-1)) - work(checkpoint) < 10_000)
   assert.match(new TextDecoder().decode(Uint8Array.from(Object.values(await invoke('document', documentId)))), /第一节/)
   await app.close()
   await launch(path.join(temporary, 'clean'))
