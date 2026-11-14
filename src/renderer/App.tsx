@@ -297,7 +297,7 @@ function Workspace({ data }: { data: Snapshot }) {
                 <option value="" disabled>选择已有文档</option>
                 {state.documents.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
               </select>}
-              <button className="button" onClick={() => importing ? cancelImport() : void importDocument()}>{importing ? '取消导入' : '导入文档'}</button>
+              {(doc || state.documents.length > 0 || importing) && <button className="button" onClick={() => importing ? cancelImport() : void importDocument()}>{importing ? '取消导入' : '导入文档'}</button>}
             </div>
           </div>
           {importing && <p className="notice" role="status">正在选择或检查文档…</p>}
@@ -319,7 +319,7 @@ function Workspace({ data }: { data: Snapshot }) {
               go: async () => { await change({ type: 'deleteDocument', docId: doc.id }); setDocId(undefined) }
             })}>移除文档副本</button>
           </> : <section className="card empty"><BookOpen size={31}/><h2>打开一份文档</h2><p>支持 PDF、Markdown 和 UTF-8 文本。</p>
-            <button className="button primary" disabled={importing} onClick={() => void importDocument()}><Upload size={16}/>导入文档</button></section>}
+            {!state.documents.length && !importing && <button className="button primary" onClick={() => void importDocument()}><Upload size={16}/>导入文档</button>}</section>}
         </>}
         {page === 'history' && <HistoryPage state={state} openTask={openTask} chooseStatus={chooseStatus} change={change}/>}
         {page === 'settings' && <SettingsPage key={data.restoring ? 'restoring' : 'ready'} data={data} version={version}
